@@ -161,7 +161,7 @@ const QuoteManager = () => {
   };
 
   return (
-    <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
+    <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif', backgroundColor: 'white', color: 'black', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <h1>Quote Management</h1>
 
       {/* Select Project */}
@@ -215,11 +215,9 @@ const QuoteManager = () => {
                 onChange={() =>
                   handleItemSelection(cat.category_id, item.item_id, item.amount)
                 }
-                checked={
-                  selectedItems[cat.category_id]?.some(
-                    (i) => i.item_id === item.item_id
-                  ) || false
-                }
+                checked={selectedItems[cat.category_id]?.some(
+                  (i) => i.item_id === item.item_id
+                ) || false}
               />
               <label htmlFor={`item-${item.item_id}`} style={{ marginLeft: '10px' }}>
                 {item.item_name} (${item.amount})
@@ -291,11 +289,12 @@ const QuoteManager = () => {
         onClick={saveQuote}
         style={{
           padding: '10px 15px',
-          backgroundColor: '#4CAF50',
+          backgroundColor: '#007bff',
           color: 'white',
           border: 'none',
           borderRadius: '4px',
           cursor: 'pointer',
+          marginTop: '20px',
         }}
       >
         Save Quote
