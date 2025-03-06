@@ -1,98 +1,302 @@
-"use client";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
-import QuoteManager from "@/components/QuoteManager";  // Importing from components folder
-import QuoteList from "@/components/QuoteList";        // Importing from components folder
+import React, { useState, useEffect } from 'react';
+import { jsPDF } from 'jspdf';
 
-export default function Quote() {
-  const [view, setView] = useState("menu");
-  const router = useRouter();
+const QuoteManager = () => {
+  const [projectId, setProjectId] = useState('');
+  const [projects, setProjects] = useState([]);
+  const [customer, setCustomer] = useState(null);
+  const [categories, setCategories] = useState([]);
+  const [itemsByCategory, setItemsByCategory] = useState({});
+  const [selectedItems, setSelectedItems] = useState({});
+  const [additionalCost, setAdditionalCost] = useState(0);
+  const [totalCost, setTotalCost] = useState(0);
+  const [searchFilters, setSearchFilters] = useState({});
+  const [isLoading, setIsLoading] = useState(false);
+  const [generatedQuote, setGeneratedQuote] = useState(null);
 
-  return (
-    <div className="container" style={styles.container}>
-      {view === "menu" ? (
-        <div style={styles.cardContainer}>
-          <h1 style={styles.heading}>Quote Management</h1>
-          <div style={styles.card}>
-            <button onClick={() => setView("generate")} style={styles.button}>
-              Generate Quote
-            </button>
+  // Fetch projects on initial load
+  useEffect(() => {
+    fetch('/api/projects')
+      .then((response) => response.json())
+      .then((data) => {
+        setProjects(data);
+      })
+      .catch((err) => console.error('Error fetching projects:', err));
+  }, []);
+
+  // Fetch customer and categories when projectId is selected
+  useEffect(() => {
+    if (projectId) {
+      setIsLoading(true);
+      Promise.all([
+        fetch(`/api/customer/${projectId}`).then((res) => res.json()),
+        fetch('/api/categories').then((res) => res.json()),
+      ])
+        .then(([customerRes, categoriesRes]) => {
+          setCustomer(customerRes);
+          setCategories(categoriesRes);
+        })
+        .catch((err) => console.error('Error fetching data:', err))
+        .finally(() => setIsLoading(false));
+    }
+  }, [projectId]);
+
+  // Fetch items for each category
+  useEffect(() => {
+    if (categories.length > 0) {
+      categories.forEach((category) => {
+        fetch(`/api/items/${category.category_id}`)
+          .then((res) => res.json())
+          .then((data) => {
+            setItemsByCategory((prev) => ({
+              ...prev,
+              [category.category_id]: data,
+            }));
+          })
+          .catch((err) => console.error(`Error fetching items for category ${category.category_name}:`, err));
+      });
+    }
+  }, [categories]);
+
+  // Calculate the total cost whenever selectedItems or additionalCost changes
+  useEffect(() => {
+    const selectedCosts = {
+      Drip: 0,
+      Plumbing: 0,
+      Automation: 0,
+      Labour: 0,
+    };
+
+    Object.entries(selectedItems).forEach(([categoryId, items]) => {
+      items.forEach((item) => {
+        const categoryName = categories.find(
+          (cat) => cat.category_id === parseInt(categoryId)
+        )?.category_name;
+        if (categoryName && selectedCosts.hasOwnProperty(categoryName)) {
+          selectedCosts[categoryName] += item.cost * item.quantity;
+        }
+      });
+    });
+
+    const total = Object.values(selectedCosts).reduce((acc, cost) => acc + (cost || 0), 0) + parseFloat(additionalCost || 0);
+    setTotalCost(total);
+  }, [selectedItems, additionalCost, categories]);
+
+  // Handle item selection
+  const handleItemSelection = (categoryId, item_id, cost) => {
+    setSelectedItems((prev) => {
+      const categoryItems = prev[categoryId] || [];
+      if (categoryItems.some((item) => item.item_id === item_id)) {
+        return {
+          ...prev,
+          [categoryId]: categoryItems.filter((item) => item.item_id !== item_id),
+        };
+      } else {
+        return {
+          ...prev,
+          [categoryId]: [
+            ...categoryItems,
+            { item_id, cost: parseFloat(cost), quantity: 1 },
+          ],
+        };
+      }
+    });
+  };
+
+  // Handle quantity change for an item
+  const handleQuantityChange = (categoryId, item_id, quantity) => {
+    setSelectedItems((prev) => {
+      const categoryItems = prev[categoryId] || [];
+      const updatedItems = categoryItems.map((item) =>
+        item.item_id === item_id ? { ...item, quantity: parseInt(quantity) } : item
+      );
+      return {
+        ...prev,
+        [categoryId]: updatedItems,
+      };
+    });
+  };
+
+  // Fetch last quote ID and increment it for new quote
+  const fetchLastQuoteId = async () => {
+    try {
+      const res = await fetch('/api/last-quote-id');
+      const data = await res.json();
+      return data.nextQuoteId;
+    } catch (err) {
+      console.error('Error fetching last quote ID:', err);
+      return null; // Handle the error gracefully
+    }
+  };
+
+  // Generate PDF of the quote
+  const generateQuote =  async () => {
+    const quoteId = await fetchLastQuoteId(); // Get the next quote ID
+    const doc = new jsPDF();
+
+    // Add Title
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(18);
+    doc.text('Quote Generated by Ukshati Technologies', 20, 20);
+
+    // Add Quote ID
+    doc.setFontSize(12);
+    doc.text(`Quote ID: ${quoteId}`, 20, 40);
+
+    // Add Customer Info
+    doc.text(`Customer: ${customer?.customer_name}`, 20, 50);
+    doc.text(`Address: ${customer?.address}`, 20, 60);
+
+    // Add Itemized List (Category name and total cost only)
+    let yPos = 70;
+    categories.forEach((category) => {
+      const categoryTotal = selectedItems[category.category_id]?.reduce(
+        (sum, item) => sum + item.cost * item.quantity, 0
+      ) || 0;
+
+      doc.text(`${category.category_name}: $${categoryTotal.toFixed(2)}`, 20, yPos);
+      yPos += 10;
+    });
+
+    // Add Additional Cost and Total
+    doc.text(`Additional Cost: $${additionalCost}`, 20, yPos);
+    yPos += 10;
+    doc.text(`Total Cost: $${totalCost.toFixed(2)}`, 20, yPos);
+
+    // Store PDF as base64
+    const pdfData = doc.output('dataurlstring');
+    setGeneratedQuote(pdfData); // Store the PDF data to be displayed
+
+    // Optionally, save the PDF
+    doc.save('generated-quote.pdf');
+  };
+
+  // Save quote to the backend
+  const saveQuote = () => {
+    const categoryCosts = categories.reduce((acc, category) => {
+      const items = selectedItems[category.category_id] || [];
+      acc[`${category.category_name.toLowerCase()}_cost`] = items.reduce((sum, item) => sum + item.cost * item.quantity, 0);
+      return acc;
+    }, {});
+
+    fetch('/api/save-quote', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        project_id: projectId,
+        customer_name: customer?.customer_name,
+        ...categoryCosts,
+        additional_cost: parseFloat(additionalCost),
+        total_cost: totalCost,
+      }),
+    })
+      .then((res) => res.json())
+      .then((data) => console.log('Quote saved:', data))
+      .catch((err) => console.error('Error saving quote:', err));
+  };
+    // Handle search filter for items
+    const handleSearchChange = (categoryId, value) => {
+      setSearchFilters((prev) => ({
+        ...prev,
+        [categoryId]: value,
+      }));
+    };
+    const getFilteredItems = (categoryId) => {
+      const filter = searchFilters[categoryId]?.toLowerCase() || '';
+      
+      // Check if there are items for this category
+      const items = itemsByCategory[categoryId] || [];
+      
+      if (!filter) {
+        return []; // Return all items if there's no filter
+      }
+  
+      return items.filter((item) =>
+        item.item_name.toLowerCase().includes(filter)
+      );
+    };
+
+    return (
+      <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif', backgroundColor: 'white', color: 'black', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        <h1>Quote Management</h1>
+        {/* Select Project */}
+        <label>Select Project ID:</label>
+        <select
+          onChange={(e) => setProjectId(e.target.value)}
+          value={projectId}
+          style={{ padding: '5px', margin: '10px 0' }}
+        >
+          <option value="">-- Select Project --</option>
+          {projects.map((proj) => (
+            <option key={proj.pid} value={proj.pid}>{proj.pid}</option>
+          ))}
+        </select>
+  
+        {/* Customer Details */}
+        {customer && (
+          <p>
+            <strong>Customer:</strong> {customer.customer_name}, <strong>Address:</strong> {customer.address}
+          </p>
+        )}
+  
+        {/* Categories and Items */}
+        {categories.map((cat) => (
+          <div key={cat.category_id} style={{ marginBottom: '20px' }}>
+            <h3>{cat.category_name}</h3>
+            <input type="text" placeholder={`Search items in ${cat.category_name}`} value={searchFilters[cat.category_id] || ''} onChange={(e) => handleSearchChange(cat.category_id, e.target.value)} style={{ padding: '5px', marginBottom: '10px', width: '100%', borderRadius: '4px' }} />
+            {getFilteredItems(cat.category_id)?.map((item) => (
+              <div key={item.item_id} style={{ display: 'flex', alignItems: 'center' }}>
+                <input type="checkbox" id={`item-${item.item_id}`} onChange={() => handleItemSelection(cat.category_id, item.item_id, item.price_pu)} checked={selectedItems[cat.category_id]?.some((i) => i.item_id === item.item_id) || false} />
+                <label htmlFor={`item-${item.item_id}`} style={{ marginLeft: '10px' }}>{item.item_name} (${item.price_pu})</label>
+                {selectedItems[cat.category_id]?.some((i) => i.item_id === item.item_id) && (
+                  <div style={{ marginLeft: '10px' }}>
+                    <input type="number" value={(selectedItems[cat.category_id]?.find((i) => i.item_id === item.item_id)?.quantity || 1)} onChange={(e) => handleQuantityChange(cat.category_id, item.item_id, e.target.value)} min="1" style={{ width: '60px' }} />
+                    <span style={{ marginLeft: '10px' }}>Total: ${(selectedItems[cat.category_id]?.find((i) => i.item_id === item.item_id)?.quantity || 1) * item.price_pu}</span>
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
-          <div style={styles.card}>
-            <button onClick={() => setView("view")} style={styles.button}>
-              View Quote
-            </button>
-          </div>
+        ))}
+
+      {/* Additional Cost */}
+      {projectId && (
+        <div>
+          <label>Additional Cost ($):</label>
+          <input type="number" value={additionalCost} onChange={(e) => setAdditionalCost(e.target.value)} placeholder="Enter additional cost" style={{ padding: '5px', marginBottom: '10px', width: '100px', borderRadius: '4px' }} />
         </div>
-      ) : view === "generate" ? (
-        <QuoteManager />
-      ) : (
-        <QuoteList />
       )}
-      <div style={styles.backButtonContainer}>
-        <button onClick={() => router.push("/")} style={styles.backButton}>
-          Back
+
+{projectId && (
+        <h2 style={{ color: 'blue', marginTop: '10px' }}>Total Cost: ${totalCost.toFixed(2)}</h2>
+      )}
+
+      {/* Generate and Save Quote */}
+      <div>
+        <button onClick={generateQuote} disabled={!projectId || !totalCost}>
+          Generate Quote
+        </button>
+        <button onClick={saveQuote} disabled={!projectId || !totalCost}>
+          Save Quote
         </button>
       </div>
+
+      {/* Display Generated Quote PDF */}
+      {generatedQuote && (
+        <div style={{ marginTop: '20px' }}>
+          <h3>Generated Quote</h3>
+          <iframe
+            src={generatedQuote}
+            width="100%"
+            height="600px"
+            title="Generated Quote"
+          />
+        </div>
+      )}
     </div>
   );
-}
-
-const styles = {
-  container: {
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
-    minHeight: "100vh",
-    backgroundColor: "#f4f4f4",
-    fontFamily: "Arial, sans-serif",
-    flexDirection: "column", // This ensures the back button stays at the bottom
-  },
-  heading: {
-    color: "black",
-  },
-  cardContainer: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    gap: "20px",
-    backgroundColor: "white",
-    padding: "30px",
-    borderRadius: "8px",
-    boxShadow: "0 4px 8px rgba(0, 0, 0, 0.1)",
-    marginBottom: "auto", // Keeps the menu cards at the top
-  },
-  card: {
-    width: "250px",
-    padding: "20px",
-    textAlign: "center",
-    borderRadius: "8px",
-    boxShadow: "0 2px 4px rgba(0, 0, 0, 0.1)",
-  },
-  button: {
-    width: "100%",
-    padding: "10px",
-    backgroundColor: "#007BFF",
-    color: "black",  // Changed to black
-    border: "none",
-    borderRadius: "4px",
-    cursor: "pointer",
-    fontSize: "16px",
-  },
-  backButtonContainer: {
-    marginTop: "auto", // Ensures the back button is always at the bottom
-    width: "100%",
-    padding: "10px",
-    textAlign: "center",
-  },
-  backButton: {
-    width: "150px", // Made the back button smaller
-    padding: "8px",
-    backgroundColor: "#28a745",
-    color: "white",
-    border: "none",
-    borderRadius: "4px",
-    cursor: "pointer",
-    fontSize: "14px", // Reduced font size for the back button
-  },
 };
+
+export default QuoteManager;
